@@ -1,0 +1,364 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "=PRODUCTOS EN RIESGO CRÍTICO (Caducidad y Stock Bajo)\n-- Identifica productos que requieren atención inmediata",
+        "operation": "executeQuery",
+        "query": "SELECT \n    p.nombre AS producto,\n    c.nombre AS categoria,\n    i.stock_actual,\n    p.unidad_medida,\n    i.fecha_caducidad,\n    CASE \n        WHEN i.fecha_caducidad < CURRENT_DATE THEN 'CADUCADO - RETIRAR'\n        WHEN i.fecha_caducidad <= CURRENT_DATE + 7 THEN 'CRÍTICO - 7 DÍAS'\n        WHEN i.fecha_caducidad <= CURRENT_DATE + 15 THEN 'URGENTE - 15 DÍAS'\n    END AS prioridad,\n    d.nombre AS donante_origen,\n    i.ubicacion_estante\nFROM inventario i\nJOIN productos p ON i.producto_id = p.id\nJOIN categorias c ON p.categoria_id = c.id\nLEFT JOIN donantes d ON i.donante_id = d.id\nWHERE (i.fecha_caducidad <= CURRENT_DATE + 15 OR i.stock_actual <= 5)\n    AND i.stock_actual > 0\nORDER BY i.fecha_caducidad ASC, i.stock_actual ASC;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgresTool",
+      "typeVersion": 2.6,
+      "position": [
+        -280,
+        -200
+      ],
+      "id": "e76fd4bd-93d9-4369-bd49-c8c26e5b4c6f",
+      "name": "productos_riesgo_critico",
+      "credentials": {
+        "postgres": {
+          "id": "eR1MP4PwO0viaYSx",
+          "name": "casa_del_sol"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "=ANÁLISIS DE ROTACIÓN DE INVENTARIO POR CATEGORÍA\n-- Muestra qué categorías se mueven más rápido y cuáles se estancan",
+        "operation": "executeQuery",
+        "query": "WITH movimientos AS (\n    SELECT \n        c.nombre AS categoria,\n        SUM(e.cantidad) AS total_entradas,\n        SUM(s.cantidad) AS total_salidas,\n        COUNT(DISTINCT e.id) AS num_donaciones,\n        COUNT(DISTINCT s.id) AS num_entregas\n    FROM categorias c\n    LEFT JOIN productos p ON c.id = p.categoria_id\n    LEFT JOIN entradas e ON p.id = e.producto_id\n    LEFT JOIN inventario inv ON p.id = inv.producto_id\n    LEFT JOIN salidas s ON inv.id = s.inventario_id\n    WHERE e.fecha_ingreso >= CURRENT_DATE - INTERVAL '90 days'\n       OR s.fecha_salida >= CURRENT_DATE - INTERVAL '90 days'\n    GROUP BY c.id, c.nombre\n)\nSELECT \n    categoria,\n    COALESCE(total_entradas, 0) AS entradas_90_dias,\n    COALESCE(total_salidas, 0) AS salidas_90_dias,\n    COALESCE(total_entradas, 0) - COALESCE(total_salidas, 0) AS diferencia,\n    CASE \n        WHEN COALESCE(total_entradas, 0) = 0 THEN 0\n        ELSE ROUND((COALESCE(total_salidas, 0) * 100.0) / COALESCE(total_entradas, 1), 2)\n    END AS porcentaje_rotacion,\n    COALESCE(num_donaciones, 0) AS donaciones_recibidas,\n    COALESCE(num_entregas, 0) AS entregas_realizadas\nFROM movimientos\nORDER BY porcentaje_rotacion DESC;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgresTool",
+      "typeVersion": 2.6,
+      "position": [
+        -160,
+        -200
+      ],
+      "id": "72e81da0-f883-481e-8a6f-ec2ac799b6b8",
+      "name": "rotacion_inventario_categoria",
+      "credentials": {
+        "postgres": {
+          "id": "eR1MP4PwO0viaYSx",
+          "name": "casa_del_sol"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "=VALOR Y IMPACTO DE DONANTES (Últimos 6 meses)\n-- Identifica donantes más valiosos y su patrón de donación",
+        "operation": "executeQuery",
+        "query": "SELECT \n    d.nombre AS donante,\n    d.tipo AS tipo_donante,\n    COUNT(e.id) AS total_donaciones,\n    SUM(e.cantidad) AS cantidad_total_donada,\n    ROUND(AVG(e.cantidad), 2) AS promedio_por_donacion,\n    MIN(e.fecha_ingreso) AS primera_donacion,\n    MAX(e.fecha_ingreso) AS ultima_donacion,\n    CURRENT_DATE - MAX(e.fecha_ingreso) AS dias_sin_donar,\n    COUNT(DISTINCT p.categoria_id) AS categorias_diferentes,\n    STRING_AGG(DISTINCT c.nombre, ', ') AS categorias_donadas\nFROM donantes d\nJOIN entradas e ON d.id = e.donante_id\nJOIN productos p ON e.producto_id = p.id\nJOIN categorias c ON p.categoria_id = c.id\nWHERE e.fecha_ingreso >= CURRENT_DATE - INTERVAL '6 months'\nGROUP BY d.id, d.nombre, d.tipo\nORDER BY cantidad_total_donada DESC, total_donaciones DESC;\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgresTool",
+      "typeVersion": 2.6,
+      "position": [
+        -40,
+        -200
+      ],
+      "id": "9cbbf1ba-d7e5-46fa-be29-43872a2c81f2",
+      "name": "valor_impacto_donantes",
+      "credentials": {
+        "postgres": {
+          "id": "eR1MP4PwO0viaYSx",
+          "name": "casa_del_sol"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "=ESTADO ACTUAL DEL ALMACÉN POR UBICACIÓN\n-- Vista general del almacén y su organización física",
+        "operation": "executeQuery",
+        "query": "SELECT \n    COALESCE(i.ubicacion_estante, 'SIN UBICAR') AS estante,\n    COUNT(DISTINCT p.id) AS productos_diferentes,\n    SUM(i.stock_actual) AS stock_total,\n    COUNT(CASE WHEN i.fecha_caducidad <= CURRENT_DATE + 30 THEN 1 END) AS proximos_vencer,\n    COUNT(CASE WHEN i.fecha_caducidad < CURRENT_DATE THEN 1 END) AS caducados,\n    STRING_AGG(DISTINCT c.nombre, ', ') AS categorias_presentes,\n    MAX(i.fecha_caducidad) AS caducidad_mas_lejana,\n    MIN(i.fecha_caducidad) AS caducidad_mas_proxima\nFROM inventario i\nJOIN productos p ON i.producto_id = p.id\nJOIN categorias c ON p.categoria_id = c.id\nWHERE i.stock_actual > 0\nGROUP BY i.ubicacion_estante\nORDER BY stock_total DESC;\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgresTool",
+      "typeVersion": 2.6,
+      "position": [
+        80,
+        -200
+      ],
+      "id": "30bd7b83-4da5-4d49-9574-38f0355ad15d",
+      "name": "estado_almacen_ubicacion",
+      "credentials": {
+        "postgres": {
+          "id": "eR1MP4PwO0viaYSx",
+          "name": "casa_del_sol"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "=TENDENCIA DE ENTREGAS POR DESTINO (Últimos 3 meses)\n-- Analiza patrones de distribución y demanda",
+        "operation": "executeQuery",
+        "query": "SELECT \n    s.tipo_destino,\n    COUNT(s.id) AS total_entregas,\n    SUM(s.cantidad) AS cantidad_total_entregada,\n    ROUND(AVG(s.cantidad), 2) AS promedio_por_entrega,\n    COUNT(DISTINCT s.inventario_id) AS productos_diferentes_entregados,\n    COUNT(DISTINCT DATE_TRUNC('week', s.fecha_salida)) AS semanas_activas,\n    MIN(s.fecha_salida) AS primera_entrega,\n    MAX(s.fecha_salida) AS ultima_entrega,\n    -- Top 3 destinos más frecuentes\n    STRING_AGG(\n        DISTINCT s.descripcion_destino, \n        ', ' \n        ORDER BY s.descripcion_destino \n        LIMIT 3\n    ) AS destinos_principales\nFROM salidas s\nWHERE s.fecha_salida >= CURRENT_DATE - INTERVAL '3 months'\nGROUP BY s.tipo_destino\nORDER BY cantidad_total_entregada DESC;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgresTool",
+      "typeVersion": 2.6,
+      "position": [
+        200,
+        -200
+      ],
+      "id": "cbc8eb1b-0988-4c47-8e4c-0eaf0c125012",
+      "name": "tendencia_entregas_destino",
+      "credentials": {
+        "postgres": {
+          "id": "eR1MP4PwO0viaYSx",
+          "name": "casa_del_sol"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "=PRODUCTOS CON COMPORTAMIENTO ANÓMALO\n-- Detecta productos con patrones extraños que requieren investigación",
+        "operation": "executeQuery",
+        "query": "WITH estadisticas_producto AS (\n    SELECT \n        p.id,\n        p.nombre,\n        SUM(e.cantidad) AS total_entrada,\n        SUM(s.cantidad) AS total_salida,\n        COUNT(e.id) AS num_entradas,\n        COUNT(s.id) AS num_salidas,\n        AVG(EXTRACT(days FROM (s.fecha_salida - e.fecha_ingreso))) AS dias_promedio_almacen\n    FROM productos p\n    LEFT JOIN entradas e ON p.id = e.producto_id\n    LEFT JOIN inventario i ON p.id = i.producto_id\n    LEFT JOIN salidas s ON i.id = s.inventario_id\n    WHERE e.fecha_ingreso >= CURRENT_DATE - INTERVAL '6 months'\n    GROUP BY p.id, p.nombre\n)\nSELECT \n    nombre AS producto,\n    COALESCE(total_entrada, 0) AS entradas,\n    COALESCE(total_salida, 0) AS salidas,\n    COALESCE(total_entrada, 0) - COALESCE(total_salida, 0) AS acumulacion,\n    CASE \n        WHEN COALESCE(total_entrada, 0) = 0 THEN 'SIN ENTRADAS'\n        WHEN COALESCE(total_salida, 0) = 0 THEN 'SIN SALIDAS - ACUMULANDO'\n        WHEN (COALESCE(total_entrada, 0) - COALESCE(total_salida, 0)) > (COALESCE(total_entrada, 0) * 0.8) THEN 'BAJA ROTACIÓN'\n        WHEN COALESCE(dias_promedio_almacen, 0) > 60 THEN 'PERMANENCIA ALTA'\n        ELSE 'NORMAL'\n    END AS alerta,\n    ROUND(COALESCE(dias_promedio_almacen, 0), 1) AS dias_promedio_almacenado\nFROM estadisticas_producto\nWHERE (COALESCE(total_entrada, 0) - COALESCE(total_salida, 0)) > (COALESCE(total_entrada, 0) * 0.5)\n   OR COALESCE(total_salida, 0) = 0\n   OR COALESCE(dias_promedio_almacen, 0) > 45\nORDER BY acumulacion DESC;\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgresTool",
+      "typeVersion": 2.6,
+      "position": [
+        320,
+        -200
+      ],
+      "id": "1db83d48-208b-47e4-8ead-1cc31d5b04c1",
+      "name": "productos_comportamiento_anomalo",
+      "credentials": {
+        "postgres": {
+          "id": "eR1MP4PwO0viaYSx",
+          "name": "casa_del_sol"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "=EFICIENCIA OPERATIVA MENSUAL\n-- Métricas clave de rendimiento del almacén",
+        "operation": "executeQuery",
+        "query": "SELECT \n    TO_CHAR(fecha, 'YYYY-MM') AS mes,\n    SUM(entradas) AS total_entradas,\n    SUM(salidas) AS total_salidas,\n    SUM(salidas) - SUM(entradas) AS balance,\n    ROUND(AVG(CASE WHEN entradas > 0 THEN salidas::FLOAT / entradas ELSE 0 END) * 100, 2) AS eficiencia_rotacion,\n    COUNT(DISTINCT donante_id) AS donantes_activos,\n    COUNT(DISTINCT producto_id) AS productos_diferentes\nFROM (\n    SELECT \n        e.fecha_ingreso AS fecha,\n        e.cantidad AS entradas,\n        0 AS salidas,\n        e.donante_id,\n        e.producto_id\n    FROM entradas e\n    WHERE e.fecha_ingreso >= CURRENT_DATE - INTERVAL '12 months'\n    \n    UNION ALL\n    \n    SELECT \n        s.fecha_salida AS fecha,\n        0 AS entradas,\n        s.cantidad AS salidas,\n        NULL AS donante_id,\n        i.producto_id\n    FROM salidas s\n    JOIN inventario i ON s.inventario_id = i.id\n    WHERE s.fecha_salida >= CURRENT_DATE - INTERVAL '12 months'\n) movimientos\nGROUP BY TO_CHAR(fecha, 'YYYY-MM')\nORDER BY mes DESC;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgresTool",
+      "typeVersion": 2.6,
+      "position": [
+        440,
+        -200
+      ],
+      "id": "d361e1fe-feae-402d-bca6-55f75c17044a",
+      "name": "eficiencia_operativa_mensual",
+      "credentials": {
+        "postgres": {
+          "id": "eR1MP4PwO0viaYSx",
+          "name": "casa_del_sol"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "=PRODUCTOS ESTRELLA VS PRODUCTOS PROBLEMA\n-- Identifica productos de alto y bajo rendimiento",
+        "operation": "executeQuery",
+        "query": "WITH rendimiento AS (\n    SELECT \n        p.nombre AS producto,\n        c.nombre AS categoria,\n        COUNT(e.id) AS frecuencia_entrada,\n        COUNT(s.id) AS frecuencia_salida,\n        SUM(e.cantidad) AS total_entrado,\n        SUM(s.cantidad) AS total_salido,\n        CURRENT_DATE - MAX(e.fecha_ingreso) AS dias_sin_entrada,\n        CURRENT_DATE - MAX(s.fecha_salida) AS dias_sin_salida\n    FROM productos p\n    JOIN categorias c ON p.categoria_id = c.id\n    LEFT JOIN entradas e ON p.id = e.producto_id\n    LEFT JOIN inventario i ON p.id = i.producto_id  \n    LEFT JOIN salidas s ON i.id = s.inventario_id\n    WHERE e.fecha_ingreso >= CURRENT_DATE - INTERVAL '6 months'\n       OR s.fecha_salida >= CURRENT_DATE - INTERVAL '6 months'\n    GROUP BY p.id, p.nombre, c.nombre\n)\nSELECT \n    producto,\n    categoria,\n    COALESCE(frecuencia_entrada, 0) AS entradas,\n    COALESCE(frecuencia_salida, 0) AS salidas,\n    COALESCE(total_entrado, 0) AS cantidad_entrada,\n    COALESCE(total_salido, 0) AS cantidad_salida,\n    CASE \n        WHEN COALESCE(frecuencia_salida, 0) >= 10 AND COALESCE(total_salido, 0) > COALESCE(total_entrado, 0) * 0.7 THEN '⭐ ESTRELLA'\n        WHEN COALESCE(frecuencia_salida, 0) = 0 OR COALESCE(dias_sin_salida, 999) > 60 THEN '⚠️ PROBLEMA'\n        WHEN COALESCE(total_salido, 0) < COALESCE(total_entrado, 0) * 0.3 THEN '📦 LENTO'\n        ELSE '✅ NORMAL'\n    END AS clasificacion,\n    COALESCE(dias_sin_entrada, 0) AS dias_sin_nueva_entrada,\n    COALESCE(dias_sin_salida, 0) AS dias_sin_entrega\nFROM rendimiento\nORDER BY frecuencia_salida DESC, total_salido DESC;\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgresTool",
+      "typeVersion": 2.6,
+      "position": [
+        560,
+        -200
+      ],
+      "id": "daa89152-3258-480b-8650-4906d4bb2c3b",
+      "name": "productos_estrella_vs_problema",
+      "credentials": {
+        "postgres": {
+          "id": "eR1MP4PwO0viaYSx",
+          "name": "casa_del_sol"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "=ANÁLISIS DE CAPACIDAD Y SATURACIÓN DEL ALMACÉN\n-- Evalúa el uso del espacio y detecta saturación",
+        "operation": "executeQuery",
+        "query": "WITH ocupacion AS (\n    SELECT \n        COUNT(DISTINCT i.ubicacion_estante) AS estantes_ocupados,\n        COUNT(CASE WHEN i.ubicacion_estante IS NULL THEN 1 END) AS productos_sin_ubicar,\n        SUM(i.stock_actual) AS stock_total,\n        AVG(i.stock_actual) AS promedio_por_lote,\n        COUNT(i.id) AS total_lotes\n    FROM inventario i\n    WHERE i.stock_actual > 0\n),\npor_estante AS (\n    SELECT \n        i.ubicacion_estante,\n        COUNT(i.id) AS lotes_por_estante,\n        SUM(i.stock_actual) AS stock_por_estante\n    FROM inventario i\n    WHERE i.stock_actual > 0 AND i.ubicacion_estante IS NOT NULL\n    GROUP BY i.ubicacion_estante\n)\nSELECT \n    'RESUMEN GENERAL' AS tipo,\n    estantes_ocupados::TEXT AS detalle,\n    stock_total AS cantidad,\n    productos_sin_ubicar AS adicional\nFROM ocupacion\n\nUNION ALL\n\nSELECT \n    'ESTANTE MÁS SATURADO' AS tipo,\n    ubicacion_estante AS detalle,\n    stock_por_estante AS cantidad,\n    lotes_por_estante AS adicional\nFROM por_estante\nORDER BY cantidad DESC\nLIMIT 1\n\nUNION ALL\n\nSELECT \n    'PROMEDIO POR ESTANTE' AS tipo,\n    'TODOS' AS detalle,\n    ROUND(AVG(stock_por_estante), 2) AS cantidad,\n    ROUND(AVG(lotes_por_estante), 2) AS adicional\nFROM por_estante;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgresTool",
+      "typeVersion": 2.6,
+      "position": [
+        680,
+        -200
+      ],
+      "id": "c9f47089-f2aa-45d7-ad76-0ed58b18983f",
+      "name": "capacidad_saturacion_almacen",
+      "credentials": {
+        "postgres": {
+          "id": "eR1MP4PwO0viaYSx",
+          "name": "casa_del_sol"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "=REPORTE EJECUTIVO - DASHBOARD PRINCIPAL\n-- Vista consolidada para toma de decisiones",
+        "operation": "executeQuery",
+        "query": "SELECT \n    'INVENTARIO ACTUAL' AS categoria,\n    COUNT(DISTINCT p.id)::TEXT AS valor,\n    'productos diferentes' AS unidad,\n    SUM(i.stock_actual)::TEXT AS detalle\nFROM inventario i\nJOIN productos p ON i.producto_id = p.id\nWHERE i.stock_actual > 0\n\nUNION ALL\n\nSELECT \n    'ALERTAS CRÍTICAS' AS categoria,\n    COUNT(*)::TEXT AS valor,\n    'productos en riesgo' AS unidad,\n    COUNT(CASE WHEN i.fecha_caducidad < CURRENT_DATE THEN 1 END)::TEXT AS detalle\nFROM inventario i\nWHERE i.stock_actual > 0 AND i.fecha_caducidad <= CURRENT_DATE + 15\n\nUNION ALL\n\nSELECT \n    'ACTIVIDAD MENSUAL' AS categoria,\n    COUNT(*)::TEXT AS valor,\n    'movimientos este mes' AS unidad,\n    (SELECT COUNT(*) FROM salidas WHERE fecha_salida >= DATE_TRUNC('month', CURRENT_DATE))::TEXT AS detalle\nFROM entradas\nWHERE fecha_ingreso >= DATE_TRUNC('month', CURRENT_DATE)\n\nUNION ALL\n\nSELECT \n    'DONANTES ACTIVOS' AS categoria,\n    COUNT(DISTINCT donante_id)::TEXT AS valor,\n    'en últimos 30 días' AS unidad,\n    (SELECT COUNT(DISTINCT d.tipo) FROM donantes d \n     JOIN entradas e ON d.id = e.donante_id \n     WHERE e.fecha_ingreso >= CURRENT_DATE - 30)::TEXT AS detalle\nFROM entradas\nWHERE fecha_ingreso >= CURRENT_DATE - 30\n\nUNION ALL\n\nSELECT \n    'COBERTURA ESTIMADA' AS categoria,\n    CASE \n        WHEN AVG(salida_diaria) > 0 THEN ROUND(stock_total / AVG(salida_diaria))::TEXT\n        ELSE 'N/A'\n    END AS valor,\n    'días de inventario' AS unidad,\n    'basado en consumo promedio' AS detalle\nFROM (\n    SELECT \n        (SELECT SUM(stock_actual) FROM inventario WHERE stock_actual > 0) AS stock_total,\n        AVG(cantidad_dia) AS salida_diaria\n    FROM (\n        SELECT \n            fecha_salida,\n            SUM(cantidad) AS cantidad_dia\n        FROM salidas \n        WHERE fecha_salida >= CURRENT_DATE - 30\n        GROUP BY fecha_salida\n    ) consumo_diario\n) calculo;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgresTool",
+      "typeVersion": 2.6,
+      "position": [
+        800,
+        -200
+      ],
+      "id": "7b5578d1-9f7a-47a5-8bb5-8c8d9e188fc5",
+      "name": "reporte_ejecutivo_dashboard",
+      "credentials": {
+        "postgres": {
+          "id": "eR1MP4PwO0viaYSx",
+          "name": "casa_del_sol"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "path": "comida"
+      },
+      "type": "@n8n/n8n-nodes-langchain.mcpTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        180,
+        -420
+      ],
+      "id": "4744b1b9-30b1-4d7e-beef-4bc32c4a44a6",
+      "name": "Almacen Comida",
+      "webhookId": "58ae458d-3793-4da9-8abb-e146ef61178b"
+    }
+  ],
+  "connections": {
+    "productos_riesgo_critico": {
+      "ai_tool": [
+        [
+          {
+            "node": "Almacen Comida",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "rotacion_inventario_categoria": {
+      "ai_tool": [
+        [
+          {
+            "node": "Almacen Comida",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "valor_impacto_donantes": {
+      "ai_tool": [
+        [
+          {
+            "node": "Almacen Comida",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "estado_almacen_ubicacion": {
+      "ai_tool": [
+        [
+          {
+            "node": "Almacen Comida",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "tendencia_entregas_destino": {
+      "ai_tool": [
+        [
+          {
+            "node": "Almacen Comida",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "productos_comportamiento_anomalo": {
+      "ai_tool": [
+        [
+          {
+            "node": "Almacen Comida",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "eficiencia_operativa_mensual": {
+      "ai_tool": [
+        [
+          {
+            "node": "Almacen Comida",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "productos_estrella_vs_problema": {
+      "ai_tool": [
+        [
+          {
+            "node": "Almacen Comida",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "capacidad_saturacion_almacen": {
+      "ai_tool": [
+        [
+          {
+            "node": "Almacen Comida",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "reporte_ejecutivo_dashboard": {
+      "ai_tool": [
+        [
+          {
+            "node": "Almacen Comida",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "instanceId": "ace24c3e3f8856d5fe321c9263afe3e32177483bb07d87eae3c4dc2e0d2f2255"
+  }
+}
