@@ -101,3 +101,9 @@ n8n/**/*.tmp
 # Local configuration files
 config.local.js
 settings.local.json
+
+# Vercel
+.vercel
+.vercel/*
+
+
